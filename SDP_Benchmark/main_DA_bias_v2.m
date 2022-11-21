@@ -1,6 +1,6 @@
 addpath(genpath('C:\Users\wenmi\Desktop\MarkovESValuation'))
 
-location = 'NYC';
+location = 'WEST';
 load(strcat('RTP_',location,'_2010_2019.mat'))
 load(strcat('DAP_',location,'_2010_2019.mat'))
 Ts = 1/12; % time step
@@ -65,30 +65,41 @@ else
     end
 end
 
+% Define number of SoC samples for testing
+% eds = [10 25 50 100 500 1000 2000 5000 10000];
+eds = [1000];
+
+
+% Store profit and computation time for each test
+profit_tests = zeros(length(eds),1);
+profit_tests_r = zeros(length(eds),1);
+profit_tests_d = zeros(length(eds),1);
+time_tests = zeros(length(eds),1);
+
+% Start valuation and arbitrage test loop with different SoC granularities
+ii = 1;
+for ed_test = eds
 %%
-consteta = 1; % 0 - variable eata, 1 - constant eta
 Pr = .5; % normalized power rating wrt energy rating
 P = Pr*Ts; % actual power rating taking time step size into account
+eta = 1.0; % efficiency
 c = 10; % marginal discharge cost - degradation
-ed = .001; % SoC sample granularity
-ef = .5; % final SoC target level, use 0 if none
+ed = 1/ed_test; % SoC sample granularity
+ef = 0.0; % final SoC target level, use 0 if none
 Ne = floor(1/ed)+1; % number of SOC samples
-e0 = .5;
-if consteta == 0
-% define efficiency
-    eta1 = 0.8;
-    eta2 = 0.9;
-    eta3 = 0.7;
-    eta = ones(Ne,1); % initialize
-    eta(1:floor(0.2*Ne)) = eta1; % first segment efficiency
-    eta(floor(0.2*Ne)+1:floor(0.9*Ne)) = eta2; % second segment efficiency
-    eta(floor(0.9*Ne)+1:end) = eta3; % second segment efficiency
-else
-    eta = .9; % efficiency
-end
+e0 = 0.0;
+
+% process index
+e_index = (0:ed:1)';
+
+% Upsampled process index to use in arbitrage only
+e_index_upsampled = (0:1/1000:1)';
+% Initialize upsampled value function vector to be used in arbitrage only
+vv_upsampled = zeros(length(e_index_upsampled),1);
+
 qEnd = zeros(Ne,Nb,1);  % generate value function samples
 
-qEnd(1:floor(ef*1000),:) = 1e2; % use 100 as the penalty for final discharge level
+qEnd(1:floor(ef*Ne),:) = 1e2; % use 100 as the penalty for final discharge level
 
 %%
 tic
@@ -101,57 +112,30 @@ q(:,:,end) = qEnd; % update final value function
 v = zeros(Ne,(DD*288+1));
 
 % process index
-if consteta == 0
-    etaapp = eta;
-    etaapp(151:250) = linspace(eta1,eta2,100);
-    etaapp(851:950) = linspace(eta2,eta3,100);
-    es = (0:ed:1)';
-    Ne = numel(es);
-    % calculate soc after charge vC = (v_t(e+P*eta))
-    eC = es + P*etaapp; 
-    % round to the nearest sample 
-    iC = ceil(eC/ed)+1;
-    iC(iC > (Ne+1)) = Ne + 2;
-    iC(iC < 2) = 1;
-    % calculate soc after discharge vC = (v_t(e-P/eta))
-    eD = es - P./etaapp; 
-    % round to the nearest sample 
-    iD = floor(eD/ed)+1;
-    iD(iD > (Ne+1)) = Ne + 2;
-    iD(iD < 2) = 1;
-    % append two slices for infinite SoC level
-    eta = [eta1;eta;eta3];
-    for t = T:-1:1 % start from the last day and move backwards
-        vi = v(:,t+1); % input value function from tomorrow
-        vo = CalcValueNoUnc_eta(lambda(t), c, P, eta, vi, ed, iC, iD);
-        v(:,t) = vo; % record the result 
-    end
-else
-    es = (0:ed:1)';
-    Ne = numel(es);
-    % calculate soc after charge vC = (v_t(e+P*eta))
-    eC = es + P*eta; 
-    % round to the nearest sample 
-    iC = ceil(eC/ed)+1;
-    iC(iC > (Ne+1)) = Ne + 2;
-    iC(iC < 2) = 1;
-    % calculate soc after discharge vC = (v_t(e-P/eta))
-    eD = es - P/eta; 
-    % round to the nearest sample 
-    iD = floor(eD/ed)+1;
-    iD(iD > (Ne+1)) = Ne + 2;
-    iD(iD < 2) = 1;
-    for t = T:-1:1 % start from the last day and move backwards
-        vi = v(:,t+1); % input value function from tomorrow
-        vo = CalcValueNoUnc(lambda(t), c, P, eta, vi, ed, iC, iD);
-        v(:,t) = vo; % record the result 
-    end
-end
-
+es = (0:ed:1)';
+Ne = numel(es);
+% calculate soc after charge vC = (v_t(e+P*eta))
+eC = es + P*eta; 
+% round to the nearest sample 
+iC = ceil(eC/ed)+1;
+iC(iC > (Ne+1)) = Ne + 2;
+iC(iC < 2) = 1;
+% calculate soc after discharge vC = (v_t(e-P/eta))
+eD = es - P/eta; 
+% round to the nearest sample 
+iD = floor(eD/ed)+1;
+iD(iD > (Ne+1)) = Ne + 2;
+iD(iD < 2) = 1;
 % bias index
 ba = (-50-Gb/2:Gb:50+Gb/2)';
 ba(1) = Ebs(2);
 ba(end) = Ebs(1);
+
+%
+eS = zeros(T,1); % generate the SoC series
+pS = eS; % generate the power series
+prS = zeros(T+1,1); % generate the power series
+e = e0; % initial SoC
 
 if pindep == 0 && pseason == 1 && pweek == 0
     for d = DD:-1:1
@@ -274,83 +258,52 @@ elseif pindep == 0 && pseason == 1 && pweek == 1
         fprintf('Day = %d\n', d)
     end
 else
-    if consteta == 0
-        for d = DD:-1:1
-            %% valuation
-            q(:,:,end) = q(:,:,1);
-    %       q(:,end) = qEnd; 
-            for t = Tp:-1:1
-                tp = (d-1)*Tp + t; % current time point
-                tH = ceil((t)*Ts); % current hour
-                lambdaNode = lambda_DA(tp) + ba;
-                for i = 1:Nb
-                    viE = (M(i,:,tH) * q(:,:,t+1)')'; % calculate expected value function from next timepoint at price node i
-                    qo = CalcValueNoUnc_eta(lambdaNode(i), c, P, eta, viE, ed, iC, iD);  % calculate value function at time point t and price node i
-    %                 qo = CalcValueNoUnc_Charge(lambdaNode(i), c, P, eta, viE, ed, iC, iD);  % calculate value function at time point t and price node i
-    %               maximum profit using the current bias discretization
-    %               ii = int32((Nb-1)/2 + ceil(bias(tp)/Gb)); % get price node i from lambda(t)
-    %               ii = max(1,min(Nb,ii));
-    %               qo = CalcValueNoUnc(lambdaNode(ii), c, P, eta, viE, ed, iC, iD);  % calculate value function at time point t and price node i
-                    q(:,i,t) = qo;
-                end
+    for d = DD:-1:1
+        %% valuation
+        q(:,:,end) = q(:,:,1);
+%       q(:,end) = qEnd; 
+        for t = Tp:-1:1
+            tp = (d-1)*Tp + t; % current time point
+            tH = ceil((t)*Ts); % current hour
+            lambdaNode = lambda_DA(tp) + ba;
+            for i = 1:Nb
+                viE = (M(i,:,tH) * q(:,:,t+1)')'; % calculate expected value function from next timepoint at price node i
+                qo = CalcValueNoUnc(lambdaNode(i), c, P, eta, viE, ed, iC, iD);  % calculate value function at time point t and price node i
+%                 qo = CalcValueNoUnc_Charge(lambdaNode(i), c, P, eta, viE, ed, iC, iD);  % calculate value function at time point t and price node i
+%               maximum profit using the current bias discretization
+%               ii = int32((Nb-1)/2 + ceil(bias(tp)/Gb)); % get price node i from lambda(t)
+%               ii = max(1,min(Nb,ii));
+%               qo = CalcValueNoUnc(lambdaNode(ii), c, P, eta, viE, ed, iC, iD);  % calculate value function at time point t and price node i
+                q(:,i,t) = qo;
             end
-            %% abitrage
-            for t = 1:Tp % start from the first time period to last time period
-                tp = (d-1)*Tp + t; % current time point
-                tH = ceil((t)*Ts); % current hour
-                i = int32((Nb-1)/2 + ceil(bias(tp)/Gb)); % get price node i from lambda(t)
-                i = max(1,min(Nb,i));
-                v(:,tp) = (M(i,:,tH) * q(:,:,t+1)')';
-            end
-            fprintf('Day = %d\n', d)
-        end 
-    else
-        for d = DD:-1:1
-            %% valuation
-            q(:,:,end) = q(:,:,1);
-    %       q(:,end) = qEnd; 
-            for t = Tp:-1:1
-                tp = (d-1)*Tp + t; % current time point
-                tH = ceil((t)*Ts); % current hour
-                lambdaNode = lambda_DA(tp) + ba;
-                for i = 1:Nb
-                    viE = (M(i,:,tH) * q(:,:,t+1)')'; % calculate expected value function from next timepoint at price node i
-                    qo = CalcValueNoUnc(lambdaNode(i), c, P, eta, viE, ed, iC, iD);  % calculate value function at time point t and price node i
-    %                 qo = CalcValueNoUnc_Charge(lambdaNode(i), c, P, eta, viE, ed, iC, iD);  % calculate value function at time point t and price node i
-    %               maximum profit using the current bias discretization
-    %               ii = int32((Nb-1)/2 + ceil(bias(tp)/Gb)); % get price node i from lambda(t)
-    %               ii = max(1,min(Nb,ii));
-    %               qo = CalcValueNoUnc(lambdaNode(ii), c, P, eta, viE, ed, iC, iD);  % calculate value function at time point t and price node i
-                    q(:,i,t) = qo;
-                end
-            end
-            %% abitrage
-            for t = 1:Tp % start from the first time period to last time period
-                tp = (d-1)*Tp + t; % current time point
-                tH = ceil((t)*Ts); % current hour
-                i = int32((Nb-1)/2 + ceil(bias(tp)/Gb)); % get price node i from lambda(t)
-                i = max(1,min(Nb,i));
-                v(:,tp) = (M(i,:,tH) * q(:,:,t+1)')';
-            end
-            fprintf('Day = %d\n', d)
         end
-    end
+        %% abitrage
+        for t = 1:Tp % start from the first time period to last time period
+            tp = (d-1)*Tp + t; % current time point
+            tH = ceil((t)*Ts); % current hour
+            i = int32((Nb-1)/2 + ceil(bias(tp)/Gb)); % get price node i from lambda(t)
+            i = max(1,min(Nb,i));
+            v(:,tp) = (M(i,:,tH) * q(:,:,t+1)')';
+        end
+        %fprintf('Day = %d\n', d)
+    end   
 end
 
 
 %% abitrage
-%
-eS = zeros(T,1); % generate the SoC series
-pS = eS; % generate the power series
-e = e0; % initial SoC
 for d = 1:DD
     for t = 1:Tp % start from the first day and move forwards
         tp = (d-1)*Tp + t; % current time point
-%         etat = etaapp(ceil(e/ed)+1); 
-        [e, p] =  Arb_Value(lambda(tp), v(:,tp), e, P, 1, eta, c, size(v,1));
-%         [e, p] =  Arb_Value_Charge(lambda(tp), v(:,tp+1), e, P, 1, eta, c, size(v,1));
+        
+        vv = v(:,tp); % read the SoC value for this day
+        vv_upsampled = interp1(e_index, vv, e_index_upsampled);
+        vv = vv_upsampled;
+
+        [e, p] =  Arb_Value(lambda(tp), vv, e, P, 1, eta, c, size(vv,1));
+%       [e, p] =  Arb_Value_Charge(lambda(tp), v(:,tp+1), e, P, 1, eta, c, size(v,1));
         eS(tp) = e; % record SoC
         pS(tp) = p; % record Power
+        prS(tp+1) = prS(tp) + p*lambda(tp) - c*max(0,p);
     end
 end
 
@@ -362,6 +315,30 @@ Discharge = sum(pS(pS>0));
 fprintf('Profit = %e, Revenue = %e, Discharged = %e\n', ProfitOut, Revenue, Discharge);
 
 solTimeOut = toc;
+
+profit_tests(ii) = ProfitOut;
+profit_tests_r(ii) = Revenue;
+profit_tests_d(ii) = Discharge;
+
+time_tests(ii) = solTimeOut;
+ii = ii + 1;
+
+
+end
+
+%% Plot
+% close all
+% figure
+% semilogx(eds, profit_tests, LineWidth=2)
+% hold on
+% semilogx(eds, 12593*ones(length(eds),1), LineWidth=2,LineStyle="--")
+% ylim([0 15000])
+% figure
+% loglog(eds, time_tests, LineWidth=2)
+
+
+
+%%
 
 % % save price and dispatch as csv
 % Table1 = array2table([lambda_DA lambda]);
